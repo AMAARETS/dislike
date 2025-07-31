@@ -1,0 +1,16 @@
+{
+  "id": "nodebb-plugin-dislike-notifier",
+  "name": "best-registration",
+  "description": "שולח התראה למשתמש כאשר הוא נותן 'דיסלייק' למשתמש אחר",
+  "url": "",
+  "library": "./library.js",
+    "hooks": [
+        {
+            "hook": "action:post.downvote",
+            "method": "notifiDown"
+        }
+    ],
+  "nbbpm": {
+    "compatibility": "^4.0.0"
+  }
+}
