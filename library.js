@@ -3,67 +3,93 @@
 const Notifications = require.main.require('./src/notifications');
 const User = require.main.require('./src/user');
 const Groups = require.main.require('./src/groups');
-const Posts = require.main.require('./src/posts'); // נדרש כדי למצוא את בעל הפוסט בביטול
+const Posts = require.main.require('./src/posts');
+const socketIndex = require.main.require('./src/socket.io/index');
+
 const plugin = {};
 
-// פונקציית עזר ליצירת מזהה התראה קבוע
+// פונקציית עזר לעדכון מספר ההתראות באייקון בזמן אמת
+async function updateUnreadCount(uids) {
+    if (!uids || !uids.length) return;
+    uids = Array.isArray(uids) ? uids : [uids];
+    
+    await Promise.all(uids.map(async (uid) => {
+        const count = await Notifications.getUnreadCount(uid);
+        // שליחת עדכון לסוקט של המשתמש הספציפי
+        socketIndex.in(`uid:${uid}`).emit('event:notifications.updateCount', count);
+        socketIndex.in(`uid:${uid}`).emit('event:unread.updateCount', count);
+    }));
+}
+
 function getNid(type, uid, pid) {
     return `dislike-notifier:${type}:${uid}:${pid}`;
 }
 
-// פונקציית עזר למציאת חברי צוות
 async function getStaffUids() {
     const groupNames = ['administrators', 'הנוטרים'];
     const groupMembersArrays = await Promise.all(
         groupNames.map(name => Groups.getMembers(name, 0, -1))
     );
-    return [...new Set(groupMembersArrays.flat())];
+    // איחוד והמרת כל ה-IDs למספרים כדי למנוע בעיות השוואה
+    return [...new Set(groupMembersArrays.flat())].map(uid => parseInt(uid, 10));
 }
 
 plugin.notifiDown = async function (data) {
     const { uid, owner, pid } = data;
+    const voterUid = parseInt(uid, 10);
+    const ownerUid = parseInt(owner, 10);
 
     try {
         const [voterName, ownerName] = await Promise.all([
-            User.getUserField(uid, 'username'),
-            User.getUserField(owner, 'username')
+            User.getUserField(voterUid, 'username'),
+            User.getUserField(ownerUid, 'username')
         ]);
 
         const postPath = `/post/${pid}`;
+        const timestamp = Date.now();
 
-        // 1. התראה לנותן
-        const voterNid = getNid('voter', uid, pid);
+        // 1. התראה לנותן הדיסלייק
+        const voterNid = getNid('voter', voterUid, pid);
         const voterNotif = await Notifications.create({
             bodyShort: `נתת דיסלייק למשתמש ${ownerName}`,
             nid: voterNid,
-            from: uid,
+            from: voterUid,
             path: postPath,
         });
-        if (voterNotif) Notifications.push(voterNotif, [uid]);
+        if (voterNotif) {
+            await Notifications.push(voterNotif, [voterUid]);
+        }
 
-        // 2. התראה למקבל (אנונימית)
-        if (uid !== owner) {
-            const ownerNid = getNid('target', owner, pid);
+        // 2. התראה למקבל הדיסלייק
+        if (voterUid !== ownerUid) {
+            const ownerNid = getNid('target', ownerUid, pid);
             const ownerNotif = await Notifications.create({
                 bodyShort: `קיבלת דיסלייק על פוסט שפרסמת`,
                 nid: ownerNid,
                 path: postPath,
             });
-            if (ownerNotif) Notifications.push(ownerNotif, [owner]);
+            if (ownerNotif) {
+                await Notifications.push(ownerNotif, [ownerUid]);
+            }
         }
 
-        // 3. התראה לצוות
-        const staffUids = (await getStaffUids()).filter(sUid => sUid !== uid);
+        // 3. התראה לצוות (אדמינים ונוטרים)
+        let staffUids = await getStaffUids();
+        // סינון: הסרת נותן הדיסלייק מרשימת הצוות כדי שלא יקבל התראה כפולה
+        staffUids = staffUids.filter(sUid => sUid !== voterUid);
+
         if (staffUids.length > 0) {
-            const staffNid = getNid('staff', pid, uid); // מזהה ייחודי לשילוב של הנותן והפוסט
+            const staffNid = getNid('staff', voterUid, pid);
             const staffNotif = await Notifications.create({
                 bodyShort: `דיסלייק: ${voterName} -> ${ownerName}`,
                 bodyLong: `המשתמש ${voterName} נתן דיסלייק לפוסט של ${ownerName}`,
                 nid: staffNid,
-                from: uid,
+                from: voterUid,
                 path: postPath,
             });
-            if (staffNotif) Notifications.push(staffNotif, staffUids);
+            if (staffNotif) {
+                await Notifications.push(staffNotif, staffUids);
+            }
         }
 
     } catch (err) {
@@ -73,21 +99,24 @@ plugin.notifiDown = async function (data) {
 
 plugin.notifiUnvote = async function (data) {
     const { uid, pid } = data;
+    const voterUid = parseInt(uid, 10);
 
     try {
-        // מציאת בעל הפוסט (כי הוא לא מגיע ב-data של unvote)
-        const owner = await Posts.getPostField(pid, 'uid');
+        const ownerUid = await Posts.getPostField(pid, 'uid');
         const staffUids = await getStaffUids();
 
-        // ביטול כל ההתראות הקשורות לפעולה זו
         const nidsToRescind = [
-            getNid('voter', uid, pid),      // התראה של הנותן
-            getNid('target', owner, pid),   // התראה של המקבל
-            getNid('staff', pid, uid)       // התראה של הצוות
+            getNid('voter', voterUid, pid),
+            getNid('target', ownerUid, pid),
+            getNid('staff', voterUid, pid)
         ];
 
-        // פקודת rescind מסירה את ההתראה מהדאטה-בייס ומלוח ההתראות של המשתמש בזמן אמת
+        // ביטול ההתראות מהדאטה-בייס
         await Promise.all(nidsToRescind.map(nid => Notifications.rescind(nid)));
+
+        // עדכון כוחני של ה-UI לכל מי שהיה מעורב
+        const uidsToUpdate = [...new Set([voterUid, parseInt(ownerUid, 10), ...staffUids])];
+        await updateUnreadCount(uidsToUpdate);
 
     } catch (err) {
         console.error('[plugin-dislike-notifier] Error during unvote:', err);
