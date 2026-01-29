@@ -8,6 +8,10 @@
         {
             "hook": "action:post.downvote",
             "method": "notifiDown"
+        },
+        {
+            "hook": "action:post.unvote",
+            "method": "notifiUnvote"
         }
     ],
   "nbbpm": {
