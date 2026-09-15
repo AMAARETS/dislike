@@ -1,20 +1,24 @@
 {
   "id": "nodebb-plugin-dislike-notifier",
-  "name": "best-registration",
+  "name": "Dislike Notifier",
   "description": "שולח התראה למשתמש כאשר הוא נותן 'דיסלייק' למשתמש אחר",
-  "url": "",
+  "url": "https://github.com/AMAARETS/dislike",
   "library": "./library.js",
-    "hooks": [
-        {
-            "hook": "action:post.downvote",
-            "method": "notifiDown"
-        },
-        {
-            "hook": "action:post.unvote",
-            "method": "notifiUnvote"
-        }
-    ],
+  "hooks": [
+    {
+      "hook": "action:post.downvote",
+      "method": "notifiDown"
+    },
+    {
+      "hook": "action:post.unvote",
+      "method": "notifiUnvote"
+    },
+    {
+      "hook": "action:post.upvote",
+      "method": "notifiUpvote"
+    }
+  ],
   "nbbpm": {
-    "compatibility": "^4.0.0"
+    "compatibility": "^3.0.0 || ^4.0.0"
   }
 }
